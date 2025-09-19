@@ -1,4 +1,3 @@
-"__pycache__/" 
-"*.pyc" 
-"*.db" 
-"*.log" 
+portfolio.db
+*.log
+__pycache__/
