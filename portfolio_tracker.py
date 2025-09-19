@@ -292,6 +292,215 @@ class PortfolioTrackerApp:
         except ValueError:
             return False
 
+    def refresh_prices(self):
+        """Refresh stock prices in the portfolio."""
+        conn = sqlite3.connect(os.path.join(USER_DATA_DIR, "portfolio.db"))
+        cursor = conn.cursor()
+        cursor.execute("SELECT symbol, shares, purchase_price, alert_threshold FROM portfolio")
+        rows = cursor.fetchall()
+
+        # Clear treeview
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        # Update prices with rate limiting
+        total_value = 0
+        total_gain_loss = 0
+        total_margin = 0
+        count = 0
+        for i, (symbol, shares, purchase_price, alert_threshold) in enumerate(rows):
+            price, name, eps_ttm, eps_cagr = self.fetch_stock_data(symbol)
+            if i % 5 == 0:  # Simple rate limit (5 calls per batch)
+                time.sleep(1)
+            if price is None or name is None:
+                logger.error(f"Failed to refresh data for {symbol}: price={price}, name={name}")
+                continue
+            intrinsic_value = self.calculate_graham_value(eps_ttm, eps_cagr) if eps_ttm and eps_cagr else None
+            cursor.execute("""
+                UPDATE portfolio SET price = ?, company_name = ?, eps_ttm = ?, eps_cagr = ?, intrinsic_value = ?, last_updated = ?
+                WHERE symbol = ?
+            """, (price, name, eps_ttm, eps_cagr, intrinsic_value, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), symbol))
+            value = price * shares
+            gain_loss = (price - purchase_price) * shares if purchase_price and price and shares else 0
+            margin = ((intrinsic_value - price) / intrinsic_value * 100) if intrinsic_value and price and intrinsic_value > 0 else 0
+            self.tree.insert("", "end", values=(
+                symbol, name, "N/A" if not purchase_price else "N/A", f"${purchase_price:.2f}" if purchase_price else "N/A", shares, f"${price:.2f}", f"${value:.2f}",
+                f"${gain_loss:.2f}" if gain_loss > 0 else f"(${abs(gain_loss):.2f})", f"${intrinsic_value:.2f}" if intrinsic_value else "N/A",
+                f"{margin:.1f}%" if margin else "N/A", f"${alert_threshold:.2f}" if alert_threshold else "N/A"
+            ))
+            total_value += value
+            total_gain_loss += gain_loss
+            if margin is not None:  # Include all margins for average
+                total_margin += margin
+                count += 1
+            if alert_threshold and price and abs(price - alert_threshold) <= 0.05 * alert_threshold:
+                messagebox.showinfo("Price Alert", f"{symbol} price (${price:.2f}) is near alert threshold (${alert_threshold:.2f})")
+        conn.commit()
+        conn.close()
+        avg_margin = total_margin / count if count > 0 else 0
+        self.summary_label.config(text=f"Portfolio Summary: {count} stocks, Total Value: ${total_value:.2f}, Total Gain/Loss: ${total_gain_loss:.2f}, Avg Margin of Safety: {avg_margin:.1f}%")
+        logger.info(f"Refreshed {len(rows)} stocks, Total Value: ${total_value:.2f}, Total Gain/Loss: ${total_gain_loss:.2f}, Valid Stocks: {count}")
+
+        # Update portfolio history
+        self.save_portfolio_value(total_value)
+
+    def save_portfolio_value(self, total_value):
+        """Save total portfolio value to history."""
+        conn = sqlite3.connect(os.path.join(USER_DATA_DIR, "portfolio.db"))
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO portfolio_history (date, total_value)
+            VALUES (?, ?)
+        """, (datetime.now().strftime("%Y-%m-%d"), total_value))
+        conn.commit()
+        conn.close()
+        logger.info(f"Saved portfolio value: ${total_value:.2f}")
+
+    def show_chart(self):
+        """Display a chart of portfolio value vs benchmarks."""
+        conn = sqlite3.connect(os.path.join(USER_DATA_DIR, "portfolio.db"))
+        cursor = conn.cursor()
+        cursor.execute("SELECT date, total_value FROM portfolio_history ORDER BY date")
+        portfolio_rows = cursor.fetchall()
+        conn.close()
+
+        if not portfolio_rows:
+            messagebox.showinfo("No Data", "No portfolio history available")
+            return
+
+        dates, portfolio_values = zip(*portfolio_rows)
+        start_date = datetime.strptime(dates[0], "%Y-%m-%d") - relativedelta(months=1)
+        end_date = datetime.strptime(dates[-1], "%Y-%m-%d") + relativedelta(days=1)
+
+        # Fetch benchmark data with yfinance
+        benchmarks = {
+            "S&P 500": "^GSPC",
+            "NYSE Composite": "^NYA",
+            "NASDAQ Composite": "^IXIC"
+        }
+        benchmark_data = {}
+        for name, ticker in benchmarks.items():
+            try:
+                data = yf.download(ticker, start=start_date, end=end_date)['Close']
+                benchmark_data[name] = (data.index.strftime("%Y-%m-%d").tolist(), data.values)
+            except Exception as e:
+                logger.error(f"Error fetching {name} data: {str(e)}")
+                benchmark_data[name] = ([], [])
+
+        # Normalize portfolio values to start at 100 for comparison
+        portfolio_base = portfolio_values[0] if portfolio_values else 100
+        normalized_portfolio = [100 * v / portfolio_base for v in portfolio_values]
+
+        # Create chart
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.plot(dates, normalized_portfolio, marker='o', label='Portfolio', color='#1f77b4' if not self.dark_mode else '#64B5F6')
+        colors = ['#ff7f0e', '#2ca02c', '#d62728'] if not self.dark_mode else ['#ffaa00', '#66cc66', '#ff6666']
+        for (name, (b_dates, b_values)), color in zip(benchmark_data.items(), colors):
+            if b_values.size > 0:
+                base_value = b_values[0] if b_values.size > 0 else 100
+                normalized_bench = [100 * v / base_value for v in b_values]
+                ax.plot(b_dates, normalized_bench, marker='s', label=name, color=color)
+        ax.set_title("Portfolio vs Benchmarks (Normalized)", fontsize=14, color='black' if not self.dark_mode else 'white')
+        ax.set_xlabel("Date", fontsize=12, color='black' if not self.dark_mode else 'white')
+        ax.set_ylabel("Normalized Value (Base 100)", fontsize=12, color='black' if not self.dark_mode else 'white')
+        ax.legend()
+        ax.tick_params(axis='x', rotation=45, colors='black' if not self.dark_mode else 'white')
+        ax.tick_params(axis='y', colors='black' if not self.dark_mode else 'white')
+        ax.grid(True, linestyle='--', alpha=0.7, color='gray' if not self.dark_mode else 'lightgray')
+        ax.set_facecolor('#f0f0f0' if not self.dark_mode else '#333333')
+        fig.set_facecolor('#f0f0f0' if not self.dark_mode else '#333333')
+        plt.tight_layout()
+
+        # Embed in Tkinter
+        if self.chart_canvas:
+            self.chart_canvas.get_tk_widget().destroy()
+        self.chart_canvas = FigureCanvasTkAgg(fig, master=self.chart_frame)
+        self.chart_canvas.draw()
+        self.chart_canvas.get_tk_widget().pack(fill="both", expand=True)
+        self.chart_canvas.get_tk_widget().configure(bg='#f0f0f0' if not self.dark_mode else '#333333')
+        plt.close(fig)
+        logger.info("Displayed portfolio vs benchmarks chart")
+
+    def export_to_excel(self):
+        """Export portfolio data to an Excel file."""
+        conn = sqlite3.connect(os.path.join(USER_DATA_DIR, "portfolio.db"))
+        cursor = conn.cursor()
+        cursor.execute("SELECT symbol, company_name, purchase_date, purchase_price, shares, price, intrinsic_value, alert_threshold FROM portfolio")
+        rows = cursor.fetchall()
+        cursor.execute("SELECT date, total_value FROM portfolio_history ORDER BY date")
+        history_rows = cursor.fetchall()
+        conn.close()
+
+        if not rows:
+            messagebox.showinfo("No Data", "No portfolio data to export")
+            return
+
+        # Create workbook
+        wb = openpyxl.Workbook()
+        sheet = wb.active
+        sheet.title = "Portfolio Summary"
+
+        # Headers
+        headers = ["Symbol", "Company Name", "Purchase Date", "Purchase Price ($)", "Shares", "Current Price ($)", "Total Value ($)", "Gain/Loss ($)", "Intrinsic Value ($)", "Margin of Safety (%)", "Alert Threshold ($)"]
+        for col, header in enumerate(headers, 1):
+            cell = sheet.cell(row=1, column=col)
+            cell.value = header
+            cell.font = Font(bold=True)
+            cell.alignment = Alignment(horizontal="center")
+
+        # Data
+        green_fill = PatternFill(start_color=Color(rgb="90EE90"), end_color=Color(rgb="90EE90"), fill_type="solid")
+        red_fill = PatternFill(start_color=Color(rgb="FFB6C1"), end_color=Color(rgb="FFB6C1"), fill_type="solid")
+        for row_idx, (symbol, name, purchase_date, purchase_price, shares, price, intrinsic_value, alert_threshold) in enumerate(rows, 2):
+            value = price * shares if price and shares else 0
+            gain_loss = (price - purchase_price) * shares if purchase_price and price and shares else 0
+            margin = ((intrinsic_value - price) / intrinsic_value * 100) if intrinsic_value and price and intrinsic_value > 0 else 0
+            sheet.cell(row=row_idx, column=1, value=symbol)
+            sheet.cell(row=row_idx, column=2, value=name)
+            sheet.cell(row=row_idx, column=3, value=purchase_date or "N/A")
+            sheet.cell(row=row_idx, column=4, value=purchase_price).number_format = "$#,##0.00"
+            sheet.cell(row=row_idx, column=5, value=shares)
+            sheet.cell(row=row_idx, column=6, value=price).number_format = "$#,##0.00"
+            sheet.cell(row=row_idx, column=7, value=value).number_format = "$#,##0.00"
+            gain_loss_cell = sheet.cell(row=row_idx, column=8, value=gain_loss)
+            gain_loss_cell.number_format = "$#,##0.00"
+            if gain_loss > 0:
+                gain_loss_cell.fill = green_fill
+            elif gain_loss < 0:
+                gain_loss_cell.fill = red_fill
+            sheet.cell(row=row_idx, column=9, value=intrinsic_value if intrinsic_value else "N/A").number_format = "$#,##0.00"
+            sheet.cell(row=row_idx, column=10, value=margin if margin else "N/A").number_format = "0.0%"
+            sheet.cell(row=row_idx, column=11, value=alert_threshold if alert_threshold else "N/A").number_format = "$#,##0.00"
+
+        # Add history sheet
+        history_sheet = wb.create_sheet("Portfolio History")
+        history_sheet.append(["Date", "Total Value ($)"])
+        for row_idx, (date, value) in enumerate(history_rows, 2):
+            history_sheet.cell(row_idx, 1, value=date)
+            history_sheet.cell(row_idx, 2, value=value).number_format = "$#,##0.00"
+
+        # Add chart to history sheet
+        chart = LineChart()
+        chart.title = "Portfolio Value Over Time"
+        chart.x_axis.title = "Date"
+        chart.y_axis.title = "Value ($)"
+        data = Reference(history_sheet, min_col=2, min_row=1, max_row=len(history_rows) + 1)
+        dates = Reference(history_sheet, min_col=1, min_row=2, max_row=len(history_rows) + 1)
+        chart.add_data(data, titles_from_data=True)
+        chart.set_categories(dates)
+        history_sheet.add_chart(chart, "D2")
+
+        # Save file
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx")],
+            initialfile="Portfolio_Export.xlsx"
+        )
+        if file_path:
+            wb.save(file_path)
+            messagebox.showinfo("Success", f"Portfolio exported to {file_path}")
+            logger.info(f"Exported portfolio to {file_path}")
+
     def fetch_stock_data(self, symbol):
         """Fetch stock price and name from yfinance, EPS TTM and CAGR from FMP if available."""
         try:
@@ -299,10 +508,13 @@ class PortfolioTrackerApp:
             stock = yf.Ticker(symbol)
             hist = stock.history(period="1mo")  # Use 1 month to ensure data
             if hist.empty:
-                logger.warning(f"No 1-day data for {symbol}, trying 1-week period")
+                logger.warning(f"No 1-month data for {symbol}, trying 1-week period")
                 hist = stock.history(period="1wk")
                 if hist.empty:
-                    raise ValueError(f"No data available for {symbol}")
+                    logger.warning(f"No 1-week data for {symbol}, trying 1-day period")
+                    hist = stock.history(period="1d")
+                    if hist.empty:
+                        raise ValueError(f"No data available for {symbol}")
             price = float(hist["Close"].iloc[-1])
             name = stock.info.get("longName", symbol)
             logger.debug(f"yfinance data for {symbol}: price={price}, name={name}")
