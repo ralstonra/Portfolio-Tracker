@@ -71,7 +71,7 @@ class PortfolioTrackerApp:
         self.tree.heading("Margin", text="Margin of Safety (%)")
         self.tree.heading("Alert Threshold", text="Alert Threshold ($)")
         self.tree.column("Symbol", width=80, anchor="center")
-        self.tree.column("Name", width=200, anchor="w")
+        self.tree.column("Name", width=200, anchor="center")  # Centered
         self.tree.column("Purchase Date", width=100, anchor="center")
         self.tree.column("Purchase Price", width=120, anchor="center")
         self.tree.column("Shares", width=80, anchor="center")
@@ -192,14 +192,14 @@ class PortfolioTrackerApp:
         total_margin = 0
         valid_rows = 0
         for symbol, name, purchase_date, purchase_price, shares, price, intrinsic_value, alert_threshold in rows:
-            if not all([price, purchase_price, shares]):  # Skip if key data is missing
+            if not all([price, shares]) or purchase_price is None:  # Allow $0 purchase_price for splits
                 logger.warning(f"Skipping {symbol} due to missing data: price={price}, purchase_price={purchase_price}, shares={shares}")
                 continue
             value = price * shares
             gain_loss = (price - purchase_price) * shares
             margin = ((intrinsic_value - price) / intrinsic_value * 100) if intrinsic_value and price and intrinsic_value > 0 else 0
             self.tree.insert("", "end", values=(
-                symbol, name, purchase_date or "N/A", f"${purchase_price:.2f}", shares, f"${price:.2f}", f"${value:.2f}",
+                symbol, name or "N/A", purchase_date or "N/A", f"${purchase_price:.2f}" if purchase_price is not None else "$0.00", shares, f"${price:.2f}", f"${value:.2f}",
                 f"${gain_loss:.2f}" if gain_loss > 0 else f"(${abs(gain_loss):.2f})", f"${intrinsic_value:.2f}" if intrinsic_value else "N/A",
                 f"{margin:.1f}%" if margin else "N/A", f"${alert_threshold:.2f}" if alert_threshold else "N/A"
             ))
@@ -324,7 +324,7 @@ class PortfolioTrackerApp:
             gain_loss = (price - purchase_price) * shares if purchase_price and price and shares else 0
             margin = ((intrinsic_value - price) / intrinsic_value * 100) if intrinsic_value and price and intrinsic_value > 0 else 0
             self.tree.insert("", "end", values=(
-                symbol, name, "N/A" if not purchase_price else "N/A", f"${purchase_price:.2f}" if purchase_price else "N/A", shares, f"${price:.2f}", f"${value:.2f}",
+                symbol, name or "N/A", "N/A" if not purchase_price else "N/A", f"${purchase_price:.2f}" if purchase_price is not None else "$0.00", shares, f"${price:.2f}", f"${value:.2f}",
                 f"${gain_loss:.2f}" if gain_loss > 0 else f"(${abs(gain_loss):.2f})", f"${intrinsic_value:.2f}" if intrinsic_value else "N/A",
                 f"{margin:.1f}%" if margin else "N/A", f"${alert_threshold:.2f}" if alert_threshold else "N/A"
             ))
@@ -456,7 +456,7 @@ class PortfolioTrackerApp:
             gain_loss = (price - purchase_price) * shares if purchase_price and price and shares else 0
             margin = ((intrinsic_value - price) / intrinsic_value * 100) if intrinsic_value and price and intrinsic_value > 0 else 0
             sheet.cell(row=row_idx, column=1, value=symbol)
-            sheet.cell(row=row_idx, column=2, value=name)
+            sheet.cell(row=row_idx, column=2, value=name or "N/A")
             sheet.cell(row=row_idx, column=3, value=purchase_date or "N/A")
             sheet.cell(row=row_idx, column=4, value=purchase_price).number_format = "$#,##0.00"
             sheet.cell(row=row_idx, column=5, value=shares)
