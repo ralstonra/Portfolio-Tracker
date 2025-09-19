@@ -249,8 +249,15 @@ class PortfolioTrackerApp:
         conn.commit()
         conn.close()
 
-        # Update treeview
+        # Recalculate total_value for the new stock
         value = price * shares
+        conn = sqlite3.connect(os.path.join(USER_DATA_DIR, "portfolio.db"))
+        cursor = conn.cursor()
+        cursor.execute("SELECT SUM(price * shares) FROM portfolio")
+        total_value = cursor.fetchone()[0] or 0
+        conn.close()
+
+        # Update treeview
         gain_loss = (price - purchase_price) * shares
         margin = ((intrinsic_value - price) / intrinsic_value * 100) if intrinsic_value and price and intrinsic_value > 0 else 0
         self.tree.insert("", "end", values=(
@@ -268,6 +275,7 @@ class PortfolioTrackerApp:
 
         # Update portfolio history and summary
         self.save_portfolio_value(total_value)
+        self.load_portfolio()  # Refresh summary
 
     def is_valid_date(self, date_str):
         """Validate date format YYYY-MM-DD."""
