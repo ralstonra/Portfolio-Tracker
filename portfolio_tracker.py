@@ -522,9 +522,10 @@ class PortfolioTrackerApp:
             response.raise_for_status()
             income_data = response.json()
             annual_eps = [float(entry["eps"]) for entry in income_data if "eps" in entry][:5]  # Last 5 years
-            eps_cagr = self.calculate_cagr(annual_eps[0], annual_eps[-1], len(annual_eps) - 1) if len(annual_eps) >= 2 else 0
             if not annual_eps:
-                logger.warning(f"No historical EPS from FMP for {symbol}, CAGR set to 0")
+                logger.warning(f"No historical EPS from FMP for {symbol}, using yfinance fallback")
+                annual_eps = [stock.info.get("trailingEps", 0)] * 5  # Fallback to current EPS
+            eps_cagr = self.calculate_cagr(annual_eps[0], annual_eps[-1], len(annual_eps) - 1) if len(annual_eps) >= 2 else 0
             logger.debug(f"FMP data for {symbol}: eps_ttm={eps_ttm}, eps_cagr={eps_cagr}")
 
             return price, name, eps_ttm, eps_cagr
@@ -534,18 +535,25 @@ class PortfolioTrackerApp:
 
     def calculate_cagr(self, start_value, end_value, periods):
         """Calculate Compound Annual Growth Rate."""
-        if start_value == 0 or periods <= 0:
+        if not isinstance(start_value, (int, float)) or not isinstance(end_value, (int, float)):
+            logger.error(f"Invalid CAGR inputs: start_value={start_value}, end_value={end_value}")
             return 0
-        return ((end_value / start_value) ** (1 / periods) - 1)
+        if start_value <= 0 or end_value <= 0 or periods <= 0:
+            return 0
+        try:
+            return ((end_value / start_value) ** (1 / periods) - 1)
+        except ZeroDivisionError:
+            return 0
 
     def calculate_graham_value(self, eps_ttm, eps_cagr):
         """Calculate Graham intrinsic value using EPS and EPS CAGR."""
-        if not eps_ttm or eps_ttm <= 0 or not eps_cagr:
+        if not eps_ttm or eps_ttm <= 0 or not eps_cagr or not isinstance(eps_cagr, (int, float)):
+            logger.warning(f"Invalid Graham inputs: eps_ttm={eps_ttm}, eps_cagr={eps_cagr}")
             return None
         aaa_yield = self.get_aaa_yield()
         if aaa_yield <= 0:
             return None
-        g = eps_cagr * 100  # Convert to percentage
+        g = float(eps_cagr) * 100  # Convert to percentage, ensure float
         earnings_multiplier = min(8.5 + 2 * g, 20)  # Cap at 20
         normalization_factor = 4.4
         value = (eps_ttm * earnings_multiplier * normalization_factor) / (100 * aaa_yield)
