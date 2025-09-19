@@ -183,6 +183,10 @@ class PortfolioTrackerApp:
         rows = cursor.fetchall()
         conn.close()
 
+        # Clear existing treeview entries
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
         total_value = 0
         total_gain_loss = 0
         total_margin = 0
@@ -242,10 +246,18 @@ class PortfolioTrackerApp:
         # Save to database
         conn = sqlite3.connect(os.path.join(USER_DATA_DIR, "portfolio.db"))
         cursor = conn.cursor()
-        cursor.execute("""
-            INSERT OR REPLACE INTO portfolio (symbol, company_name, purchase_date, purchase_price, shares, price, eps_ttm, eps_cagr, intrinsic_value, alert_threshold, last_updated)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (symbol, name, purchase_date, purchase_price, shares, price, eps_ttm, eps_cagr, intrinsic_value, alert_threshold, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        cursor.execute("SELECT COUNT(*) FROM portfolio WHERE symbol = ?", (symbol,))
+        if cursor.fetchone()[0] > 0:
+            logger.warning(f"Stock {symbol} already exists, updating instead")
+            cursor.execute("""
+                UPDATE portfolio SET company_name = ?, purchase_date = ?, purchase_price = ?, shares = ?, price = ?, eps_ttm = ?, eps_cagr = ?, intrinsic_value = ?, alert_threshold = ?, last_updated = ?
+                WHERE symbol = ?
+            """, (name, purchase_date, purchase_price, shares, price, eps_ttm, eps_cagr, intrinsic_value, alert_threshold, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), symbol))
+        else:
+            cursor.execute("""
+                INSERT INTO portfolio (symbol, company_name, purchase_date, purchase_price, shares, price, eps_ttm, eps_cagr, intrinsic_value, alert_threshold, last_updated)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (symbol, name, purchase_date, purchase_price, shares, price, eps_ttm, eps_cagr, intrinsic_value, alert_threshold, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
         conn.commit()
         conn.close()
 
@@ -257,15 +269,9 @@ class PortfolioTrackerApp:
         total_value = cursor.fetchone()[0] or 0
         conn.close()
 
-        # Update treeview
-        gain_loss = (price - purchase_price) * shares
-        margin = ((intrinsic_value - price) / intrinsic_value * 100) if intrinsic_value and price and intrinsic_value > 0 else 0
-        self.tree.insert("", "end", values=(
-            symbol, name, purchase_date, f"${purchase_price:.2f}", shares, f"${price:.2f}", f"${value:.2f}",
-            f"${gain_loss:.2f}" if gain_loss > 0 else f"(${abs(gain_loss):.2f})", f"${intrinsic_value:.2f}" if intrinsic_value else "N/A",
-            f"{margin:.1f}%" if margin else "N/A", f"${alert_threshold:.2f}" if alert_threshold else "N/A"
-        ))
-        logger.info(f"Added {symbol} with {shares} shares at purchase ${purchase_price:.2f}, current ${price:.2f}, intrinsic ${intrinsic_value:.2f}")
+        # Update treeview and reload portfolio
+        self.load_portfolio()  # Clears and reloads treeview
+        logger.info(f"Added/Updated {symbol} with {shares} shares at purchase ${purchase_price:.2f}, current ${price:.2f}, intrinsic ${intrinsic_value:.2f}")
 
         self.symbol_entry.delete(0, tk.END)
         self.shares_entry.delete(0, tk.END)
@@ -273,9 +279,8 @@ class PortfolioTrackerApp:
         self.purchase_price_entry.delete(0, tk.END)
         self.alert_threshold_entry.delete(0, tk.END)
 
-        # Update portfolio history and summary
+        # Update portfolio history
         self.save_portfolio_value(total_value)
-        self.load_portfolio()  # Refresh summary to reflect new total
 
     def is_valid_date(self, date_str):
         """Validate date format YYYY-MM-DD."""
