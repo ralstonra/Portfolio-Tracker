@@ -271,7 +271,7 @@ class PortfolioTrackerApp:
 
         # Update treeview and reload portfolio
         self.load_portfolio()  # Clears and reloads treeview
-        logger.info(f"Added/Updated {symbol} with {shares} shares at purchase ${purchase_price:.2f}, current ${price:.2f}, intrinsic ${intrinsic_value:.2f}")
+        logger.info(f"Added/Updated {symbol} with {shares} shares at purchase ${purchase_price:.2f}, current ${price:.2f}, intrinsic {intrinsic_value:.2f if intrinsic_value is not None else 'N/A'}")
 
         self.symbol_entry.delete(0, tk.END)
         self.shares_entry.delete(0, tk.END)
