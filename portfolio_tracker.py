@@ -275,7 +275,7 @@ class PortfolioTrackerApp:
 
         # Update portfolio history and summary
         self.save_portfolio_value(total_value)
-        self.load_portfolio()  # Refresh summary
+        self.load_portfolio()  # Refresh summary to reflect new total
 
     def is_valid_date(self, date_str):
         """Validate date format YYYY-MM-DD."""
